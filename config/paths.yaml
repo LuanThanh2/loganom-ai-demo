@@ -1,0 +1,8 @@
+# Directory paths used by the pipeline
+raw_data_dir: sample_data
+ecs_parquet_dir: data/ecs_parquet
+features_dir: data/features
+models_dir: data/models
+scores_dir: data/scores
+bundles_dir: bundles
+logs_dir: data/logs

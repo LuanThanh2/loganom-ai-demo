@@ -1,0 +1,18 @@
+# venv
+venv/
+.venv/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Data and bundles
+/data/
+/bundles/
+
+# OS
+.DS_Store
+Thumbs.db

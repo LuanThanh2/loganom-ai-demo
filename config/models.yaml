@@ -1,0 +1,15 @@
+# Isolation Forest hyperparameters and scoring configs
+isolation_forest:
+  n_estimators: 150
+  max_samples: auto
+  contamination: 0.05
+  random_state: 42
+  n_jobs: -1
+
+scaling:
+  scaler: robust  # options: robust
+
+scoring:
+  top_n: 10
+  # threshold_method: quantile uses (1 - contamination) quantile
+  threshold_method: quantile

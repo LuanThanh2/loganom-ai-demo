@@ -1,0 +1,53 @@
+# Mapping raw fields to ECS fields per source
+windows_evtx:
+  timestamp: "@timestamp"
+  map:
+    Event.System.Computer: host.name
+    Event.System.EventID: event.code
+    Event.EventData.TargetUserName: user.name
+    Event.EventData.IpAddress: source.ip
+    Event.EventData.SubjectUserName: user.target.name
+    Event.EventData.LogonType: event.action
+    Event.EventData.Status: event.outcome
+    Event.EventData.ProcessName: process.name
+    Event.EventData.CommandLine: process.command_line
+
+sysmon:
+  timestamp: "@timestamp"
+  map:
+    UtcTime: "@timestamp"
+    Computer: host.name
+    EventID: event.code
+    Image: process.name
+    CommandLine: process.command_line
+    User: user.name
+    SourceIp: source.ip
+    DestinationIp: destination.ip
+    SourcePort: source.port
+    DestinationPort: destination.port
+    Protocol: network.transport
+
+zeek_conn:
+  timestamp: "@timestamp"
+  map:
+    ts: "@timestamp"
+    id.orig_h: source.ip
+    id.orig_p: source.port
+    id.resp_h: destination.ip
+    id.resp_p: destination.port
+    proto: network.transport
+    service: network.protocol
+    conn_state: event.outcome
+    uid: event.id
+    local_orig: network.direction
+
+syslog_auth:
+  timestamp: "@timestamp"
+  map:
+    host: "host.name"
+    proc: "process.name"
+    msg: "message"
+    user: "user.name"
+    ip: "source.ip"
+    action: "event.action"
+    outcome: "event.outcome"
