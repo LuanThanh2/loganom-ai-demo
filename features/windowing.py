@@ -25,11 +25,16 @@ def add_time_window_counts(df: pd.DataFrame, group_keys: List[str], ts_col: str,
             r = r.reindex(g_sorted.index)
             return r.reindex(g.index)
 
-        rolled = (
-            df.groupby(group_keys, group_keys=False)
-              .apply(_roll_group)
-        )
-        df[name] = rolled
+        rolled = df.groupby(group_keys, group_keys=False).apply(_roll_group)
+        # rolled can be a DataFrame with a single column depending on pandas version; squeeze to Series
+        if hasattr(rolled, "squeeze"):
+            rolled = rolled.squeeze()
+        # Drop the group index levels to align with df's index
+        try:
+            rolled = rolled.reset_index(level=list(range(len(group_keys))), drop=True)
+        except Exception:
+            pass
+        df[name] = rolled.astype("float64")
         rate_name = f"{flag_col}_rate_{w}m"
         df[rate_name] = df[name] / (w * 60.0)
 

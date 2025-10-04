@@ -5,6 +5,17 @@ from typing import Any, Dict, List
 
 import yaml
 
+# Attempt to load environment variables from a .env file at project root.
+# This allows configuration such as SAMPLE_DATA_DIR, TZ, CSV_TIME_COL, etc.
+try:
+    from dotenv import load_dotenv  # type: ignore
+    _ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+    # Do not override explicit OS envs; only fill missing keys from .env
+    load_dotenv(dotenv_path=_ENV_PATH, override=False)
+except Exception:
+    # python-dotenv is optional at runtime; safe to continue without it
+    pass
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PROJECT_ROOT / "config"

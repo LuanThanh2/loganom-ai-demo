@@ -1,59 +1,111 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
+import typer
 from models.utils import get_paths
 from pipeline.build_store import run_ingest
+from pipeline.ingest import ingest_all
+from features.build_features import build_feature_table
+from models.train_if import train_model
+from models.infer import score_features
+from pipeline.alerting import select_alerts
+from pipeline.bundle import build_bundles_for_top_alerts
+from pipeline.run_demo import run_all
 
-try:
-    from parsers.csv_parser import parse_csv_file  # type: ignore
-except Exception:
-    parse_csv_file = None  # type: ignore
+app = typer.Typer()
 
-try:
-    from parsers.syslog_parser import parse_auth_logs  # type: ignore
-except Exception:
-    parse_auth_logs = None  # type: ignore
+@app.command()
+def ingest(reset: bool = typer.Option(False, "--reset", is_flag=True, help="Reset data before ingest")):
+    """Ingest raw logs and convert to ECS Parquet format"""
+    if reset:
+        paths = get_paths()
+        data_dir = Path(paths["ecs_parquet_dir"])
+        if data_dir.exists():
+            shutil.rmtree(data_dir)
+            print(f"[reset] Removed {data_dir}")
+    
+    print("[ingest] Starting data ingestion...")
+    ingest_all()
+    print("[ingest] Ingestion completed!")
 
-def _ingest_csv_recursive(root: Path) -> None:
-    if parse_csv_file is None:
-        print("[ingest] CSV parser not available, skip CSV ingest.")
-        return
-    if not root.exists():
-        print(f"[ingest] CSV root not found: {root}")
-        return
-    files = list(root.rglob("*.csv"))
-    if not files:
-        print(f"[ingest] No CSV files under: {root}")
-        return
-    print(f"[ingest] Found {len(files)} CSV file(s)")
-    for p in files:
-        try:
-            parse_csv_file(p)
-            print(f"[ingest] CSV ingested: {p}")
-        except Exception as e:
-            print(f"[ingest] CSV skipped {p}: {e}")
+@app.command()
+def featurize(reset: bool = typer.Option(False, "--reset", is_flag=True, help="Reset features before building")):
+    """Build feature table from ECS data"""
+    if reset:
+        paths = get_paths()
+        features_dir = Path(paths["features_dir"])
+        if features_dir.exists():
+            shutil.rmtree(features_dir)
+            print(f"[reset] Removed {features_dir}")
+    
+    print("[featurize] Building features...")
+    build_feature_table()
+    print("[featurize] Feature building completed!")
 
-def ingest_all() -> Path:
+@app.command()
+def train(reset: bool = typer.Option(False, "--reset", is_flag=True, help="Reset model before training")):
+    """Train Isolation Forest model"""
+    if reset:
+        paths = get_paths()
+        models_dir = Path(paths["models_dir"])
+        if models_dir.exists():
+            shutil.rmtree(models_dir)
+            print(f"[reset] Removed {models_dir}")
+    
+    print("[train] Training Isolation Forest...")
+    train_model()
+    print("[train] Model training completed!")
+
+@app.command()
+def score(reset: bool = typer.Option(False, "--reset", is_flag=True, help="Reset scores before scoring")):
+    """Score anomalies using trained model"""
+    if reset:
+        paths = get_paths()
+        scores_dir = Path(paths["scores_dir"])
+        if scores_dir.exists():
+            shutil.rmtree(scores_dir)
+            print(f"[reset] Removed {scores_dir}")
+    
+    print("[score] Scoring anomalies...")
+    score_features()
+    print("[score] Scoring completed!")
+
+@app.command()
+def bundle():
+    """Create forensic bundles for top alerts"""
+    print("[bundle] Creating forensic bundles...")
     paths = get_paths()
-    out_dir = Path(paths["ecs_parquet_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        run_ingest()
-    except Exception as e:
-        print(f"[ingest] Base ingest error: {e}")
-    sample_root = Path(os.getenv("SAMPLE_DATA_DIR", "sample_data"))
-    if parse_auth_logs:
-        try:
-            parse_auth_logs(sample_root)
-            print("[ingest] Syslog .log ingested (recursive).")
-        except Exception as e:
-            print(f"[ingest] Syslog .log ingest error: {e}")
-    else:
-        print("[ingest] Syslog parser not available.")
-    _ingest_csv_recursive(sample_root)
-    return out_dir
+    scores_path = Path(paths["scores_dir"]) / "scores.parquet"
+    if not scores_path.exists():
+        print("[bundle] No scores found. Run 'score' command first.")
+        return
+    
+    top, thr = select_alerts(str(scores_path))
+    build_bundles_for_top_alerts(top, thr)
+    print("[bundle] Bundle creation completed!")
+
+@app.command()
+def demo(reset: bool = typer.Option(False, "--reset", is_flag=True, help="Reset data before demo")):
+    """Run complete demo pipeline: ingest → featurize → train → score → bundle"""
+    if reset:
+        paths = get_paths()
+        data_dir = Path(paths["ecs_parquet_dir"])
+        features_dir = Path(paths["features_dir"])
+        models_dir = Path(paths["models_dir"])
+        scores_dir = Path(paths["scores_dir"])
+        bundles_dir = Path(paths["bundles_dir"])
+        
+        for d in [data_dir, features_dir, models_dir, scores_dir, bundles_dir]:
+            if d.exists():
+                shutil.rmtree(d)
+                print(f"[reset] Removed {d}")
+    
+    print("[demo] Running complete pipeline...")
+    bundles_path = run_all()
+    print(f"[demo] Pipeline completed! Bundles created in: {bundles_path}")
 
 if __name__ == "__main__":
-    ingest_all()
+    app()

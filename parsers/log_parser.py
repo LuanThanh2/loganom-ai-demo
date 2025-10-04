@@ -11,9 +11,16 @@ from dateutil import tz
 
 from models.utils import get_paths
 
+# Traditional syslog auth format (e.g., "Jan 15 10:31:00 host sshd[pid]: msg")
 SYSLOG_RE = re.compile(
     r"^(?P<mon>\w{3})\s+(?P<day>\d{1,2})\s(?P<time>\d{2}:\d{2}:\d{2})\s(?P<host>[^\s]+)\s(?P<proc>[^:]+):\s(?P<msg>.*)$"
 )
+
+# Windows CBS-like log lines (e.g., "2016-09-28 04:30:31, Info CBS Failed ...")
+CBS_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2})(?:,\s*\w+)?\s+(?P<proc>\S+)\s+(?P<msg>.*)$"
+)
+
 IP_RE = re.compile(r"\b(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\b")
 USER_FAIL_RE = re.compile(r"Failed password for (?:invalid user\s+)?(?P<user>[\w\-\.\$]+)")
 USER_OK_RE = re.compile(r"Accepted (?:password|publickey) for (?P<user>[\w\-\.\$]+)")
@@ -37,47 +44,80 @@ def _rows_from_logfile(p: Path) -> List[Dict]:
     with open(p, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.rstrip("\n")
+
+            # Try Linux syslog format first
             m = SYSLOG_RE.match(line)
-            if not m:
+            if m:
+                gd = m.groupdict()
+                ts = _parse_ts(gd["mon"], gd["day"], gd["time"])
+                host = gd.get("host")
+                proc = gd.get("proc")
+                msg = gd.get("msg", "")
+
+                action = "user_login"
+                outcome = None
+                user = None
+                if "Failed password" in msg or "authentication failure" in msg:
+                    outcome = "Failure"
+                    uf = USER_FAIL_RE.search(msg)
+                    if uf:
+                        user = uf.group("user")
+                elif "Accepted " in msg:
+                    outcome = "Success"
+                    uo = USER_OK_RE.search(msg)
+                    if uo:
+                        user = uo.group("user")
+
+                ip = None
+                ipm = IP_RE.search(msg)
+                if ipm:
+                    ip = ipm.group("ip")
+
+                rows.append({
+                    "@timestamp": ts.isoformat() if ts is not None else None,
+                    "host.name": host,
+                    "process.name": proc,
+                    "message": msg,
+                    "event.module": "syslog",
+                    "event.dataset": "auth",
+                    "event.action": action,
+                    "event.outcome": outcome,
+                    "user.name": user,
+                    "source.ip": ip,
+                    "log.file.path": str(p),
+                })
                 continue
-            gd = m.groupdict()
-            ts = _parse_ts(gd["mon"], gd["day"], gd["time"])
-            host = gd.get("host")
-            proc = gd.get("proc")
-            msg = gd.get("msg", "")
 
-            action = "user_login"
-            outcome = None
-            user = None
-            if "Failed password" in msg or "authentication failure" in msg:
-                outcome = "Failure"
-                uf = USER_FAIL_RE.search(msg)
-                if uf:
-                    user = uf.group("user")
-            elif "Accepted " in msg:
-                outcome = "Success"
-                uo = USER_OK_RE.search(msg)
-                if uo:
-                    user = uo.group("user")
+            # Try Windows CBS-like format (used by error.log, keyword_Failed.log examples)
+            m2 = CBS_RE.match(line)
+            if m2:
+                gd = m2.groupdict()
+                ts = pd.to_datetime(f"{gd['date']} {gd['time']}", utc=True, errors="coerce")
+                msg = gd.get("msg", "")
+                proc = gd.get("proc")
+                ip = None
+                ipm = IP_RE.search(msg)
+                if ipm:
+                    ip = ipm.group("ip")
 
-            ip = None
-            ipm = IP_RE.search(msg)
-            if ipm:
-                ip = ipm.group("ip")
+                # Simple heuristic mapping
+                outcome = "Failure" if "Failed" in msg or "Error" in msg else None
+                action = "system_update" if "CBS" in proc or "CSI" in msg else "log_event"
 
-            rows.append({
-                "@timestamp": ts.isoformat() if ts is not None else None,
-                "host.name": host,
-                "process.name": proc,
-                "message": msg,
-                "event.module": "syslog",
-                "event.dataset": "auth",
-                "event.action": action,
-                "event.outcome": outcome,
-                "user.name": user,
-                "source.ip": ip,
-                "log.file.path": str(p),
-            })
+                rows.append({
+                    "@timestamp": ts.isoformat() if pd.notna(ts) else None,
+                    "host.name": os.getenv("HOSTNAME", None),
+                    "process.name": proc,
+                    "message": msg,
+                    "event.module": "windows",
+                    "event.dataset": "cbs",
+                    "event.action": action,
+                    "event.outcome": outcome,
+                    "source.ip": ip,
+                    "log.file.path": str(p),
+                })
+
+            # Non-matching lines are skipped for robustness
     return rows
 
 def parse_auth_logs(root: Path = Path("sample_data")) -> Path:
