@@ -8,8 +8,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 from dateutil import tz
-
 from models.utils import get_paths
+from parsers.base_reader import write_partitioned_parquet
 
 # Traditional syslog auth format (e.g., "Jan 15 10:31:00 host sshd[pid]: msg")
 SYSLOG_RE = re.compile(
@@ -18,17 +18,25 @@ SYSLOG_RE = re.compile(
 
 # Windows CBS-like log lines (e.g., "2016-09-28 04:30:31, Info CBS Failed ...")
 CBS_RE = re.compile(
-    r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2})(?:,\s*\w+)?\s+(?P<proc>\S+)\s+(?P<msg>.*)$"
+    r'^(?P<ts>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}),\s*'
+    r'(?P<level>\w+)\s+'
+    r'(?P<component>[A-Za-z0-9_.-]+)\s+'
+    r'(?P<message>.*)$'
 )
 
 IP_RE = re.compile(r"\b(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\b")
 USER_FAIL_RE = re.compile(r"Failed password for (?:invalid user\s+)?(?P<user>[\w\-\.\$]+)")
 USER_OK_RE = re.compile(r"Accepted (?:password|publickey) for (?P<user>[\w\-\.\$]+)")
-MONTH_MAP = {m: i for i, m in enumerate(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], start=1)}
+MONTH_MAP = {m: i for i, m in enumerate(
+    ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], start=1)}
+
+# Năm mặc định cho syslog (log không có năm)
+DEFAULT_SYSLOG_YEAR = int(os.getenv("SYSLOG_DEFAULT_YEAR", datetime.utcnow().year))
 
 def _parse_ts(mon: str, day: str, hhmmss: str) -> Optional[pd.Timestamp]:
+    """Parse 'Oct 01 10:02:00' -> UTC Timestamp với năm mặc định từ ENV."""
     try:
-        year = datetime.utcnow().year
+        year = DEFAULT_SYSLOG_YEAR
         dt_naive = datetime(year=year, month=MONTH_MAP[mon.title()], day=int(day))
         t = datetime.strptime(hhmmss, "%H:%M:%S").time()
         dt_local = datetime.combine(dt_naive, t)
@@ -39,117 +47,127 @@ def _parse_ts(mon: str, day: str, hhmmss: str) -> Optional[pd.Timestamp]:
     except Exception:
         return None
 
-def _rows_from_logfile(p: Path) -> List[Dict]:
-    rows: List[Dict] = []
-    with open(p, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.rstrip("\n")
-
-            # Try Linux syslog format first
-            m = SYSLOG_RE.match(line)
-            if m:
-                gd = m.groupdict()
-                ts = _parse_ts(gd["mon"], gd["day"], gd["time"])
-                host = gd.get("host")
-                proc = gd.get("proc")
-                msg = gd.get("msg", "")
-
-                action = "user_login"
-                outcome = None
-                user = None
-                if "Failed password" in msg or "authentication failure" in msg:
-                    outcome = "Failure"
-                    uf = USER_FAIL_RE.search(msg)
-                    if uf:
-                        user = uf.group("user")
-                elif "Accepted " in msg:
-                    outcome = "Success"
-                    uo = USER_OK_RE.search(msg)
-                    if uo:
-                        user = uo.group("user")
-
-                ip = None
-                ipm = IP_RE.search(msg)
-                if ipm:
-                    ip = ipm.group("ip")
-
-                rows.append({
-                    "@timestamp": ts.isoformat() if ts is not None else None,
-                    "host.name": host,
-                    "process.name": proc,
-                    "message": msg,
-                    "event.module": "syslog",
-                    "event.dataset": "auth",
-                    "event.action": action,
-                    "event.outcome": outcome,
-                    "user.name": user,
-                    "source.ip": ip,
-                    "log.file.path": str(p),
-                })
-                continue
-
-            # Try Windows CBS-like format (used by error.log, keyword_Failed.log examples)
-            m2 = CBS_RE.match(line)
-            if m2:
-                gd = m2.groupdict()
-                ts = pd.to_datetime(f"{gd['date']} {gd['time']}", utc=True, errors="coerce")
-                msg = gd.get("msg", "")
-                proc = gd.get("proc")
-                ip = None
-                ipm = IP_RE.search(msg)
-                if ipm:
-                    ip = ipm.group("ip")
-
-                # Simple heuristic mapping
-                outcome = "Failure" if "Failed" in msg or "Error" in msg else None
-                action = "system_update" if "CBS" in proc or "CSI" in msg else "log_event"
-
-                rows.append({
-                    "@timestamp": ts.isoformat() if pd.notna(ts) else None,
-                    "host.name": os.getenv("HOSTNAME", None),
-                    "process.name": proc,
-                    "message": msg,
-                    "event.module": "windows",
-                    "event.dataset": "cbs",
-                    "event.action": action,
-                    "event.outcome": outcome,
-                    "source.ip": ip,
-                    "log.file.path": str(p),
-                })
-
-            # Non-matching lines are skipped for robustness
-    return rows
-
 def parse_auth_logs(root: Path = Path("sample_data")) -> Path:
+    """
+    Quét *.log đệ quy:
+    - Syslog auth không có năm -> dùng SYSLOG_DEFAULT_YEAR
+    - Windows CBS/CSI có năm đầy đủ -> giữ nguyên
+    Ghi ra data/ecs_parquet/syslog_auth/dt=YYYY-MM-DD/
+    """
     paths = get_paths()
     out_root = Path(paths["ecs_parquet_dir"]).resolve()
-    out_dir_root = out_root / "syslog_auth"
-    out_dir_root.mkdir(parents=True, exist_ok=True)
     log_files = list(root.rglob("*.log"))
     if not log_files:
         return out_root
-    all_rows: List[Dict] = []
+
+    CHUNK_ROWS = int(os.getenv("CHUNK_ROWS", "200000"))
+    buf: List[Dict] = []
+
+    def _flush():
+        nonlocal buf
+        if not buf:
+            return
+        df = pd.DataFrame(buf); buf = []
+        df = df.dropna(subset=["@timestamp"])
+        df["@timestamp"] = pd.to_datetime(df["@timestamp"], utc=True, errors="coerce")
+        df = df.dropna(subset=["@timestamp"])
+        if df.empty:
+            return
+        df["dt"] = df["@timestamp"].dt.strftime("%Y-%m-%d")
+        keep_cols = [
+            "@timestamp","event.module","event.dataset","event.action","event.outcome",
+            "host.name","user.name","process.name","source.ip","message","log.file.path","dt"
+        ]
+        cols = [c for c in keep_cols if c in df.columns]
+        # ghi partition theo dt dưới dataset 'syslog_auth'
+        try:
+            write_partitioned_parquet(df[cols], out_root, "syslog_auth")
+        except TypeError:
+            # fallback nếu hàm nhận 2 tham số (base_dir đã gồm dataset)
+            write_partitioned_parquet(df[cols], out_root / "syslog_auth")
+
     for p in log_files:
         try:
-            all_rows.extend(_rows_from_logfile(p))
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.rstrip("\n")
+
+                    # 1) Syslog auth
+                    m = SYSLOG_RE.match(line)
+                    if m:
+                        gd = m.groupdict()
+                        ts = _parse_ts(gd["mon"], gd["day"], gd["time"])
+                        msg = gd.get("msg","")
+                        proc = gd.get("proc")
+                        outcome = None
+                        user = None
+                        if "Failed password" in msg or "authentication failure" in msg:
+                            outcome = "Failure"
+                            uf = USER_FAIL_RE.search(msg)
+                            if uf:
+                                user = uf.group("user")
+                        elif "Accepted " in msg:
+                            outcome = "Success"
+                            uo = USER_OK_RE.search(msg)
+                            if uo:
+                                user = uo.group("user")
+                        ip = None
+                        ipm = IP_RE.search(msg)
+                        if ipm:
+                            ip = ipm.group("ip")
+
+                        buf.append({
+                            "@timestamp": ts.isoformat() if ts is not None else None,
+                            "host.name": gd.get("host"),
+                            "process.name": proc,
+                            "message": msg,
+                            "event.module": "syslog",
+                            "event.dataset": "auth",
+                            "event.action": "user_login",
+                            "event.outcome": outcome,
+                            "user.name": user,
+                            "source.ip": ip,
+                            "log.file.path": str(p),
+                        })
+                        if len(buf) >= CHUNK_ROWS:
+                            _flush()
+                        continue
+
+                    # 2) Windows CBS/CSI
+                    m2 = CBS_RE.match(line)
+                    if m2:
+                        gd = m2.groupdict()
+                        ts = pd.to_datetime(gd["ts"], utc=True, errors="coerce")
+                        level = gd.get("level")
+                        component = gd.get("component")
+                        msg = gd.get("message","")
+                        ip = None
+                        ipm = IP_RE.search(msg)
+                        if ipm:
+                            ip = ipm.group("ip")
+
+                        outcome = "Failure" if ("Failed" in msg or "Error" in msg) else None
+                        action = "system_update" if (component and ("CBS" in component or "CSI" in component)) else "log_event"
+
+                        buf.append({
+                            "@timestamp": ts.isoformat() if pd.notna(ts) else None,
+                            "host.name": os.getenv("HOSTNAME", None),
+                            "process.name": component,
+                            "message": msg,
+                            "event.module": "windows",
+                            "event.dataset": "cbs",
+                            "event.action": action,
+                            "event.outcome": outcome or level,
+                            "source.ip": ip,
+                            "log.file.path": str(p),
+                        })
+                        if len(buf) >= CHUNK_ROWS:
+                            _flush()
+                        continue
+            _flush()
         except Exception:
             continue
-    if not all_rows:
-        return out_root
-    df = pd.DataFrame(all_rows)
-    df = df.dropna(subset=["@timestamp"])
-    df["@timestamp"] = pd.to_datetime(df["@timestamp"], utc=True, errors="coerce")
-    df = df.dropna(subset=["@timestamp"])
-    df["dt"] = df["@timestamp"].dt.strftime("%Y-%m-%d")
-    keep_cols = [
-        "@timestamp","event.module","event.dataset","event.action","event.outcome",
-        "host.name","user.name","process.name","source.ip","message","log.file.path"
-    ]
-    for d, g in df.groupby("dt", dropna=True):
-        out_dir = out_dir_root / f"dt={d}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "part.parquet").unlink(missing_ok=True)
-        g[keep_cols].to_parquet(out_dir / "part.parquet", index=False)
+
     return out_root
 
 def parse_auth_log() -> Path:

@@ -1,0 +1,5 @@
+{"ts":"2025-10-01T10:00:00Z","id.orig_h":"10.0.0.12","id.orig_p":52000,"id.resp_h":"93.184.216.34","id.resp_p":80,"proto":"tcp","service":"http","conn_state":"SF","uid":"C1","local_orig":true}
+{"ts":"2025-10-01T10:01:00Z","id.orig_h":"10.0.0.12","id.orig_p":52001,"id.resp_h":"93.184.216.34","id.resp_p":80,"proto":"tcp","service":"http","conn_state":"SF","uid":"C2","local_orig":true}
+{"ts":"2025-10-01T10:02:00Z","id.orig_h":"10.0.0.12","id.orig_p":52002,"id.resp_h":"198.51.100.10","id.resp_p":4444,"proto":"tcp","service":"-","conn_state":"S0","uid":"C3","local_orig":true}
+{"ts":"2025-10-01T10:02:10Z","id.orig_h":"10.0.0.12","id.orig_p":52003,"id.resp_h":"198.51.100.10","id.resp_p":4444,"proto":"tcp","service":"-","conn_state":"S0","uid":"C4","local_orig":true}
+{"ts":"2025-10-01T10:02:20Z","id.orig_h":"10.0.0.12","id.orig_p":52004,"id.resp_h":"198.51.100.10","id.resp_p":4444,"proto":"tcp","service":"-","conn_state":"S0","uid":"C5","local_orig":true}

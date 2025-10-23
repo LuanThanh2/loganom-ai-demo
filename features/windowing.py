@@ -1,41 +1,36 @@
-import pandas as pd
 from typing import List
+import pandas as pd
 
+def add_time_window_counts(
+    df: pd.DataFrame,
+    group_cols: List[str],
+    ts_col: str,
+    value_col: str,
+    windows_min: List[int],
+) -> pd.DataFrame:
+    """
+    Tính rolling sum cho cờ nhị phân value_col theo group_cols, cửa sổ phút.
+    Tạo cột: <value_col>_count_<w>m. An toàn với dữ liệu rỗng/thiếu group.
+    """
+    if df.empty:
+        return df
 
-def add_time_window_counts(df: pd.DataFrame, group_keys: List[str], ts_col: str, flag_col: str, windows_min: List[int]) -> pd.DataFrame:
-    df = df.copy()
-    df[ts_col] = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
+    out = df.copy()
+    out[ts_col] = pd.to_datetime(out[ts_col], utc=True, errors="coerce")
+    out = out.dropna(subset=[ts_col]).sort_values(ts_col)
+    out[value_col] = pd.to_numeric(out[value_col], errors="coerce").fillna(0).astype(int)
 
-    for key in group_keys:
-        if key not in df.columns:
-            df[key] = "unknown"
-
+    idx = out.set_index(ts_col)
     for w in windows_min:
-        win = f"{w}min"
-        name = f"{flag_col}_count_{w}m"
-
-        def _roll_group(g: pd.DataFrame) -> pd.Series:
-            g = g.copy()
-            g = g.dropna(subset=[ts_col])
-            if g.empty:
-                return pd.Series(index=g.index, dtype="float64")
-            g_sorted = g.sort_values(ts_col)
-            r = g_sorted.rolling(win, on=ts_col, min_periods=1)[flag_col].sum()
-            # align back to original group index order
-            r = r.reindex(g_sorted.index)
-            return r.reindex(g.index)
-
-        rolled = df.groupby(group_keys, group_keys=False).apply(_roll_group)
-        # rolled can be a DataFrame with a single column depending on pandas version; squeeze to Series
-        if hasattr(rolled, "squeeze"):
-            rolled = rolled.squeeze()
-        # Drop the group index levels to align with df's index
+        colname = f"{value_col}_count_{w}m"
         try:
-            rolled = rolled.reset_index(level=list(range(len(group_keys))), drop=True)
+            rolled = (
+                idx.groupby(group_cols)[value_col]
+                  .rolling(f"{w}min")
+                  .sum()
+                  .reset_index(level=group_cols, drop=True)
+            )
+            out[colname] = rolled.values.astype("float64")
         except Exception:
-            pass
-        df[name] = rolled.astype("float64")
-        rate_name = f"{flag_col}_rate_{w}m"
-        df[rate_name] = df[name] / (w * 60.0)
-
-    return df
+            out[colname] = 0.0
+    return out

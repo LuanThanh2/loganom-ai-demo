@@ -121,8 +121,13 @@ Notes
 
 ```
 python -m venv venv
-.\\venv\\Scripts\\Activate.ps1
+.\venv312\Scripts\Activate.ps1
 ```
+Bước 2: Nâng pip/setuptools/wheel rồi cài dạng “binary wheels”
+
+
+python -m pip install --upgrade pip setuptools wheelpip cache purgepip install --only-binary=:all: numpy pandas pyarrow fastparquet scikit-learn shappip install typer joblib PyYAML matplotlib streamlit google-generativeai python-dotenv
+
 
 2) Cài đặt thư viện:
 
