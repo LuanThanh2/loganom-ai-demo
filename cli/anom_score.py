@@ -36,12 +36,49 @@ def cmd_score():
     out = score_features()
     typer.echo(f"[score] Wrote: {out}")
 
+
+@app.command("train-lstm")
+def cmd_train_lstm():
+    from models.lstm_anomaly import train_lstm_model
+    out = train_lstm_model()
+    typer.echo(f"[train-lstm] Wrote: {out}")
+
+
+@app.command("score-lstm")
+def cmd_score_lstm():
+    from models.lstm_infer import score_lstm_features
+    out = score_lstm_features()
+    typer.echo(f"[score-lstm] Wrote: {out}")
+
+
+@app.command("ensemble")
+def cmd_ensemble():
+    from models.ensemble import combine_if_lstm
+    out = combine_if_lstm()
+    typer.echo(f"[ensemble] Wrote: {out}")
+
+
+@app.command("respond")
+def cmd_respond(apply: bool = typer.Option(False, help="Apply actions (otherwise dry-run)")):
+    from pipeline.respond import respond
+    out = respond(dry_run=not apply)
+    typer.echo(f"[respond] Audit log: {out}")
+
 @app.command("demo")
 def cmd_demo():
     cmd_ingest()
     cmd_featurize()
     cmd_train()
     cmd_score()
+
+
+@app.command("demo-lstm")
+def cmd_demo_lstm():
+    cmd_ingest()
+    cmd_featurize()
+    cmd_train_lstm()
+    cmd_score_lstm()
+    cmd_ensemble()
 
 if __name__ == "__main__":
     app()

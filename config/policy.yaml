@@ -1,0 +1,23 @@
+# Local SOAR policy (Windows-friendly). All actions are executed offline.
+
+rules:
+  - name: Pause Windows Update on high ensemble score
+    condition:
+      score_col: ensemble.score
+      gte: 0.327
+    actions:
+      - type: powershell
+        cmd: net stop wuauserv
+      - type: powershell
+        cmd: dism /online /cleanup-image /scanhealth
+      - type: powershell
+        cmd: sfc /scannow
+
+  - name: High IF score fallback
+    condition:
+      score_col: anom.score
+      gte: 0.327
+    actions:
+      - type: powershell
+        cmd: wevtutil qe System /c:50 /rd:true /f:text
+
