@@ -32,7 +32,11 @@ def train_model() -> Path:
     id_cols = {"@timestamp", "host.name", "user.name", "source.ip", "destination.ip", "session.id"}
     feature_cols = [c for c in df.columns if c not in id_cols and pd.api.types.is_numeric_dtype(df[c])]
 
-    X = df[feature_cols].fillna(0.0)
+    # Drop constant/zero-variance columns to avoid misleading SHAP and improve CBS-only training
+    X_all = df[feature_cols].fillna(0.0)
+    non_constant_cols = [c for c in feature_cols if X_all[c].nunique(dropna=False) > 1]
+    feature_cols = non_constant_cols
+    X = X_all[feature_cols]
 
     # Robust scaling
     scaler = RobustScaler()

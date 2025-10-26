@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List, Tuple
 import pandas as pd
+import re
 
 from models.utils import get_paths, ensure_dir
 from features.windowing import add_time_window_counts
@@ -74,7 +75,7 @@ def build_feature_table_large(sample_per_day: int = 100_000) -> Path:
             if col not in ecs.columns:
                 ecs[col] = None
 
-        # Cờ sự kiện
+        # Event flags
         ecs["login_failed"] = (
             (ecs["event.code"].astype(str) == "4625") |
             (ecs["event.outcome"].astype(str).str.lower() == "failure")
@@ -85,8 +86,23 @@ def build_feature_table_large(sample_per_day: int = 100_000) -> Path:
             (ecs["event.outcome"].astype(str) == "S0")
         ).fillna(False).astype(int)
 
-        # Entropy lệnh
+        # Entropy: ưu tiên command_line; nếu thiếu, dùng message (CBS thường không có command_line)
         ecs["process.command_line_entropy"] = ecs["process.command_line"].astype(str).apply(shannon_entropy)
+        ecs["message_entropy"] = ecs.get("message", pd.Series([None] * len(ecs))).astype(str).apply(shannon_entropy)
+        # Fallback entropy cho mô hình tổng quát
+        cmd_raw = ecs.get("process.command_line")
+        has_cmd = cmd_raw.astype(str).str.len() > 0 if cmd_raw is not None else pd.Series([False] * len(ecs))
+        ecs["text_entropy"] = ecs["process.command_line_entropy"].where(has_cmd, ecs["message_entropy"])  # type: ignore[arg-type]
+
+        # CBS-specific flags from message contents
+        # cbs_failed: dòng có Error/Failed/hex code 0x.. trong CBS
+        msg_series = ecs.get("message", pd.Series([None] * len(ecs))).astype(str)
+        is_cbs = (
+            ecs.get("event.module", pd.Series([None] * len(ecs))).astype(str).str.lower().eq("windows")
+            & ecs.get("event.dataset", pd.Series([None] * len(ecs))).astype(str).str.lower().eq("cbs")
+        )
+        err_re = re.compile(r"(?i)(fail|error|0x[0-9a-f]{2,})")
+        ecs["cbs_failed"] = (is_cbs & msg_series.str.contains(err_re)).fillna(False).astype(int)
 
         # Sessionize (an toàn với try)
         try:
@@ -95,19 +111,34 @@ def build_feature_table_large(sample_per_day: int = 100_000) -> Path:
             if "session.id" not in ecs.columns:
                 ecs["session.id"] = None
 
-        # Rolling counts theo host và user cho 2 cờ
+        # Rolling counts theo host và user cho các cờ tổng quát
         for flag in ["login_failed", "conn_suspicious"]:
             ecs = add_time_window_counts(ecs, ["host.name"], "@timestamp", flag, [1, 5, 15])
             ecs = add_time_window_counts(ecs, ["user.name"], "@timestamp", flag, [1, 5, 15])
+
+        # Rolling counts cho CBS theo host và process.name
+        for flag in ["cbs_failed"]:
+            ecs = add_time_window_counts(ecs, ["host.name"], "@timestamp", flag, [1, 5, 15])
+            ecs = add_time_window_counts(ecs, ["process.name"], "@timestamp", flag, [1, 5, 15])
 
         # Chọn cột features đúng tên
         feature_cols = [
             "login_failed",
             "conn_suspicious",
+            # Entropy tổng quát (ưu tiên dùng trong model mới vì phù hợp cả CBS)
+            "text_entropy",
+            # Giữ các cột gốc để tương thích ngược và cho ablation
             "process.command_line_entropy",
+            "message_entropy",
+            # CBS flags
+            "cbs_failed",
         ]
         for w in [1, 5, 15]:
             for flag in ["login_failed", "conn_suspicious"]:
+                col = f"{flag}_count_{w}m"
+                if col in ecs.columns:
+                    feature_cols.append(col)
+            for flag in ["cbs_failed"]:
                 col = f"{flag}_count_{w}m"
                 if col in ecs.columns:
                     feature_cols.append(col)
