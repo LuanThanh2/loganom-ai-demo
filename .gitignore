@@ -12,3 +12,4 @@ __pycache__/
 
 # Sample data (lớn)
 sample_data/
+data/logs/actions.jsonl
