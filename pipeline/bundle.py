@@ -115,7 +115,7 @@ def build_bundle_for_alert(alert_row: pd.Series, idx: int, threshold: float) -> 
     coc_path = tmp_dir / "coc.json"
     write_json(coc_path, coc)
 
-    # 8) Bundle manifest (hash every file inside the bundle)
+    # Bundle manifest (hash every file inside the bundle)
     manifest = {"files": {}}
     for p in [
         raw_logs_path,

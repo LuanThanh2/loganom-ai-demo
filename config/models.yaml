@@ -15,6 +15,8 @@ scoring:
   threshold_method: quantile
 
 # LSTM Autoencoder defaults (can be tuned per dataset)
+
+
 lstm_autoencoder:
   sequence_length: 10
   epochs: 3
@@ -22,3 +24,5 @@ lstm_autoencoder:
   learning_rate: 0.001
   lstm_units: [64, 32]
   dropout: 0.2
+
+

@@ -38,6 +38,23 @@ def score_lstm_features() -> Path:
         df["@timestamp"] = pd.to_datetime(df["@timestamp"], utc=True, errors="coerce")
         df = df.dropna(subset=["@timestamp"]).sort_values("@timestamp")
 
+    # Optional RAM-friendly sampling to mirror training subset
+    import os
+    try:
+        max_rows = int(os.getenv("LSTM_MAX_ROWS", "0"))
+    except Exception:
+        max_rows = 0
+    try:
+        sample_frac = float(os.getenv("LSTM_SAMPLE_FRAC", "0"))
+    except Exception:
+        sample_frac = 0.0
+    if sample_frac > 0 and sample_frac < 1:
+        df = df.sample(frac=sample_frac, random_state=42).sort_values("@timestamp")
+    elif max_rows > 0 and len(df) > max_rows:
+        df = df.sample(n=max_rows, random_state=42).sort_values("@timestamp")
+    # Ensure RangeIndex for positional assignment later
+    df = df.reset_index(drop=True)
+
     # Ensure feature columns exist
     for c in feature_cols:
         if c not in df.columns:
@@ -51,9 +68,12 @@ def score_lstm_features() -> Path:
     out["lstm.mse"] = np.nan
     out["lstm.anomaly"] = False
     if len(mse) > 0:
-        out.loc[seq_len - 1 : seq_len - 1 + len(mse) - 1, "lstm.mse"] = mse
+        start = max(0, int(seq_len) - 1)
+        end = min(len(out), start + len(mse))
+        # positional assignment to avoid label-based KeyError
+        out.iloc[start:end, out.columns.get_loc("lstm.mse")] = mse[: end - start]
 
-    # Threshold: quantile 95% of available MSEs
+    # Threshold: quantile 95% of available MSEs (sampled subset)
     if np.isfinite(out["lstm.mse"]).any():
         valid = out["lstm.mse"].dropna().values
         thr = float(np.quantile(valid, 0.95)) if len(valid) > 0 else float("inf")

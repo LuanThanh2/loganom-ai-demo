@@ -18,21 +18,20 @@ st.title("Loganom AI")
 st.markdown(
     """
     Loganom‑AI là hệ thống phát hiện bất thường (tương tự SIEM, không phải IPS) cho log bảo mật.
-    Hiện tại dự án sử dụng Isolation Forest (IF) để chấm điểm bất thường, SHAP để giải thích, và SOAR (respond) để mô phỏng hành động ứng phó cục bộ. LSTM (time‑series) đã tích hợp nhưng tạm tắt do giới hạn RAM.
+    Hiện tại dự án sử dụng Isolation Forest (IF) và LSTM để chấm điểm bất thường, SHAP để giải thích, và SOAR (respond) để mô phỏng hành động ứng phó cục bộ.
 
-    - Luồng tổng quan: Logs → ECS Normalize → Feature Store → Modeling/Scoring (IF) → Threshold/Alerts → Explainability (SHAP) → Forensic Bundles → UI → SOAR.
+    - Luồng tổng quan: Logs → ECS Normalize → Feature Store → Modeling/Scoring (IF + LSTM) → Threshold/Alerts → Explainability (SHAP) → Forensic Bundles → UI → SOAR.
     - Thành phần chính: `parsers/`, `features/`, `models/`, `explain/`, `pipeline/`, `ui/`, `cli/`, `config/`.
-    - Điều khiển qua CLI (`python -m cli.anom_score ...`) và xem trên các trang trong sidebar: Overview, Hosts, Alerts, LSTM Analysis (tùy chọn), SOAR Actions.
     """
 )
 
-with st.expander("Quickstart (hiện tại chạy bằng Isolation Forest)", expanded=True):
+with st.expander("Bắt đầu", expanded=True):
     st.code(
         """
-        # 1) Chấm điểm bằng Isolation Forest
-        python -m cli.anom_score score
+        # 1) Chấm điểm bằng Isolation Forest và LSTM
+        python -m cli.anom_score score score-lstm
 
-        # 2) (tuỳ chọn) Chạy SOAR mô phỏng để tạo audit
+        # 2) (tuỳ chọn) Chạy SOAR mô phỏng từ bộ dữ liệu Loghub Window Event Logs để tạo audit
         python -m cli.anom_score respond
 
         # 3) Mở giao diện
@@ -74,7 +73,14 @@ with col_b:
 
 with col_c:
     st.subheader("LSTM (tùy chọn)")
-    st.write("Đã tích hợp LSTM Autoencoder, nhưng với bộ dữ liệu rất lớn cần RAM cao. Tạm thời dùng IF.")
+    model_path = Path(paths["models_dir"]) / "lstm_anomaly.joblib"
+    lstm_scores = Path(paths["scores_dir"]) / "lstm_scores.parquet"
+    if lstm_scores.exists() or model_path.exists():
+        target = lstm_scores if lstm_scores.exists() else model_path
+        ts = datetime.fromtimestamp(target.stat().st_mtime)
+        size_kb = max(1, target.stat().st_size // 1024)
+        st.success(f"LSTM (demo) đã train thành công. Tệp: {target.name}, cập nhật: {ts:%Y-%m-%d %H:%M:%S}")
+    else:
+        st.write("Đã tích hợp LSTM Autoencoder (demo). Để hiển thị, hãy chạy: python -m cli.anom_score train-lstm && python -m cli.anom_score score-lstm")
 
 st.divider()
-st.info("Nếu muốn chạy nhanh toàn pipeline demo (IF): python -m cli.anom_score demo")
